@@ -102,20 +102,165 @@ renderAll();
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 (function(){
- const CFG='hounet_v7_cloud_config';let client=null,uid=null,cloudReady=false,saveTimer=null;
- const el=id=>document.getElementById(id),status=t=>{if(el('hounetCloudStatus'))el('hounetCloudStatus').textContent=t};
+ const CFG='hounet_v7_cloud_config';
+ let client=null, uid=null, saveTimer=null, channel=null, applyingRemote=false, readyForAutoSync=false;
+ const el=id=>document.getElementById(id);
+ const status=t=>{if(el('hounetCloudStatus'))el('hounetCloudStatus').textContent=t};
  try{let c=JSON.parse(localStorage.getItem(CFG)||'{}');el('hcUrl').value=c.url||'';el('hcKey').value=c.key||'';el('hcEmail').value=c.email||''}catch(e){}
- window.hounetOpenCloud=()=>{el('hounetCloudModal').style.display='flex';status(client?'مهيّأ. سجّل الدخول أو نفّذ المزامنة.':'أدخل رابط ومفتاح Supabase ثم اضغط دخول.');};
+ window.hounetOpenCloud=()=>{el('hounetCloudModal').style.display='flex';status(client?'تم إعداد الاتصال. '+(uid?'الحساب متصل.':'يلزم تسجيل الدخول.'):'أدخل رابط ومفتاح Supabase ثم اضغط دخول.');};
  window.hounetCloseCloud=()=>el('hounetCloudModal').style.display='none';
- function init(){let url=el('hcUrl').value.trim(),key=el('hcKey').value.trim();if(!url||!key){throw Error('أدخل Project URL ومفتاح anon/publishable.')}if(!window.supabase)throw Error('ما نجّمش نحمل مكتبة السحابة. تأكّد من الإنترنت.');localStorage.setItem(CFG,JSON.stringify({url,key,email:el('hcEmail').value.trim()}));client=window.supabase.createClient(url,key);return client;}
+ function init(){
+   let url=el('hcUrl').value.trim(),key=el('hcKey').value.trim();
+   if(!url||!key)throw Error('أدخل Project URL ومفتاح anon/publishable.');
+   if(!window.supabase)throw Error('ما نجّمش نحمل مكتبة السحابة. تأكّد من الإنترنت.');
+   localStorage.setItem(CFG,JSON.stringify({url,key,email:el('hcEmail').value.trim()}));
+   client=window.supabase.createClient(url,key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
+   return client;
+ }
  async function getClient(){return client||init()}
- window.hounetAuth=async mode=>{try{let c=await getClient(),email=el('hcEmail').value.trim(),password=el('hcPass').value;if(!email||!password)throw Error('اكتب البريد وكلمة السر.');let r=mode==='signup'?await c.auth.signUp({email,password}):await c.auth.signInWithPassword({email,password});if(r.error)throw r.error;uid=r.data.user&&r.data.user.id;if(mode==='signup'&&!r.data.session){status('تم إنشاء الحساب. افتح بريدك لتأكيد الحساب، ثم ارجع واضغط دخول.');return}status('تم الدخول. اختار جلب بيانات السحابة أو رفع بيانات الجهاز أول مرة.');}catch(e){status('خطأ: '+(e.message||e))}};
- window.hounetLogout=async()=>{try{if(client)await client.auth.signOut();uid=null;status('تم تسجيل الخروج.')}catch(e){status(e.message||String(e))}};
- async function authUser(){let c=await getClient(),r=await c.auth.getUser();if(r.error||!r.data.user)throw Error('يلزم تسجيل الدخول أولًا.');uid=r.data.user.id;return c}
- window.hounetPush=async()=>{try{let c=await authUser();let r=await c.from('shop_data').upsert({user_id:uid,payload:db,updated_at:new Date().toISOString()},{onConflict:'user_id'});if(r.error)throw r.error;status('تم رفع البيانات للسحابة بنجاح في '+new Date().toLocaleString('ar-TN')+'.')}catch(e){status('فشل الرفع: '+(e.message||e)+'\nتأكّد من إنشاء جدول shop_data وتفعيل سياسات RLS حسب ملف cloud/supabase_setup.sql.')}};
- window.hounetPull=async()=>{try{let c=await authUser(),r=await c.from('shop_data').select('payload,updated_at').eq('user_id',uid).maybeSingle();if(r.error)throw r.error;if(!r.data){status('ما فماش بيانات في السحابة لهذا الحساب. استعمل رفع بيانات هذا الجهاز إذا هذا أول جهاز.');return}if(!confirm('باش نستبدل البيانات الموجودة على هذا الجهاز بالبيانات الموجودة في السحابة. اعمل نسخة احتياطية قبل المتابعة. موافق؟'))return;db=r.data.payload;localStorage.setItem(KEY,JSON.stringify(db));renderAll();status('تم جلب بيانات السحابة بنجاح. آخر تحديث: '+r.data.updated_at)}catch(e){status('فشل الجلب: '+(e.message||e)+'\nتأكّد من إعداد جدول shop_data وRLS.')}};
- try{let saved=JSON.parse(localStorage.getItem(CFG)||'{}');if(saved.url&&saved.key&&window.supabase){client=window.supabase.createClient(saved.url,saved.key);client.auth.getSession().then(r=>{if(r.data.session){uid=r.data.session.user.id;status('تم استرجاع جلسة السحابة. الحفظ التلقائي مفعّل.')}})}}catch(e){}
- window.hounetAutoCloudSave=()=>{if(!client)return;clearTimeout(saveTimer);saveTimer=setTimeout(async()=>{try{let c=client,r=await c.auth.getUser();if(r.data.user){uid=r.data.user.id;let x=await c.from('shop_data').upsert({user_id:uid,payload:db,updated_at:new Date().toISOString()},{onConflict:'user_id'});if(x.error)status('الحفظ المحلي ناجح، لكن المزامنة السحابية فشلت: '+x.error.message);else status('متصل بالسحابة — تم حفظ آخر تغيير.')}}catch(e){}},1200)};
+ async function authUser(){
+   let c=await getClient(),r=await c.auth.getUser();
+   if(r.error||!r.data.user)throw Error('يلزم تسجيل الدخول أولًا.');
+   uid=r.data.user.id;return c;
+ }
+ function stopRealtime(){if(client&&channel){client.removeChannel(channel).catch(()=>{});channel=null;}}
+ async function pullRemote(c, quiet=false){
+   const r=await c.from('shop_data').select('payload,updated_at').eq('user_id',uid).maybeSingle();
+   if(r.error)throw r.error;
+   if(!r.data){if(!quiet)status('ما فماش بيانات في السحابة لهذا الحساب. استعمل «رفع بيانات هذا الجهاز» لأول مرة.');return false;}
+   applyingRemote=true;
+   try{db=r.data.payload;localStorage.setItem(KEY,JSON.stringify(db));renderAll();}
+   finally{setTimeout(()=>{applyingRemote=false;},250);}
+   if(!quiet)status('تم جلب البيانات من السحابة. آخر تحديث: '+r.data.updated_at);
+   return true;
+ }
+ function startRealtime(c){
+   stopRealtime();
+   channel=c.channel('hounet-shop-data-'+uid)
+    .on('postgres_changes',{event:'*',schema:'public',table:'shop_data',filter:'user_id=eq.'+uid},async payload=>{
+      if(!readyForAutoSync||applyingRemote)return;
+      const row=payload.new;
+      if(!row||!row.payload)return;
+      applyingRemote=true;
+      try{db=row.payload;localStorage.setItem(KEY,JSON.stringify(db));renderAll();status('تم استقبال تحديث جديد من الجهاز الآخر تلقائيًا.');}
+      catch(e){status('تعذّر تطبيق تحديث الجهاز الآخر: '+(e.message||e));}
+      finally{setTimeout(()=>{applyingRemote=false;},400);}
+    })
+    .subscribe(state=>{
+      if(state==='SUBSCRIBED')status('متصل بالسحابة — المزامنة التلقائية مفعّلة.');
+      else if(state==='CHANNEL_ERROR'||state==='TIMED_OUT')status('الحفظ السحابي قد يعمل، لكن التحديث اللحظي غير متصل. تأكّد من تفعيل Realtime لجدول shop_data.');
+    });
+ }
+ function mergeLists(localList, remoteList){
+   const out=[], seen=new Map();
+   for(const item of [...(remoteList||[]), ...(localList||[])]){
+     const key=item&&item.id!=null?String(item.id):JSON.stringify(item);
+     if(seen.has(key)){out[seen.get(key)]=item;}else{seen.set(key,out.length);out.push(item);}
+   }
+   return out;
+ }
+ function mergeData(localData, remoteData){
+   const l=localData||{},r=remoteData||{};
+   return {
+     ...r,...l,
+     products:mergeLists(l.products,r.products),
+     sales:mergeLists(l.sales,r.sales),
+     purchases:mergeLists(l.purchases,r.purchases)
+   };
+ }
+ async function connectAndSync(c, mode){
+   const u=await c.auth.getUser();
+   if(u.error||!u.data.user)throw Error('يلزم تسجيل الدخول أولًا.');
+   uid=u.data.user.id;
+   const r=await c.from('shop_data').select('payload,updated_at').eq('user_id',uid).maybeSingle();
+   if(r.error)throw r.error;
+   if(!r.data){
+     readyForAutoSync=false;
+     status('تم الدخول، لكن السحابة فارغة. إذا هذا الجهاز فيه البيانات الصحيحة اضغط «رفع بيانات هذا الجهاز» لأول مرة.');
+     return;
+   }
+   const localCount=(db.products||[]).length+(db.sales||[]).length+(db.purchases||[]).length;
+   const remoteCount=(r.data.payload.products||[]).length+(r.data.payload.sales||[]).length+(r.data.payload.purchases||[]).length;
+   if(localCount>0 && !confirm('لقينا بيانات في هذا الجهاز وفي السحابة. باش ندمج السلع وسجلّات البيع والشراء الموجودة في الزوز، والنسخة المحلية تربح إذا نفس السجل موجود في الزوز. ملاحظة: كمية المنتج المكرّر ما تتجمعش. هل توافق؟ اعمل نسخة احتياطية قبل المتابعة.')){
+     readyForAutoSync=false;
+     status('ما بدّلنا حتى بيانات. اختار يدويًا «جلب بيانات السحابة» أو «رفع بيانات هذا الجهاز» بعد ما تتأكد من النسخة الصحيحة.');
+     return;
+   }
+   applyingRemote=true;
+   try{
+     db=mergeData(db,r.data.payload);
+     localStorage.setItem(KEY,JSON.stringify(db));renderAll();
+   }finally{setTimeout(()=>{applyingRemote=false;},250);}
+   readyForAutoSync=true;
+   startRealtime(c);
+   await window.hounetPushMerged(false);
+   status('تم دمج البيانات وربط الجهاز بالسحابة. المزامنة التلقائية مفعّلة.');
+ }
+ window.hounetAuth=async mode=>{
+   try{
+     let c=await getClient(),email=el('hcEmail').value.trim(),password=el('hcPass').value;
+     if(!email||!password)throw Error('اكتب البريد وكلمة السر.');
+     let r=mode==='signup'?await c.auth.signUp({email,password}):await c.auth.signInWithPassword({email,password});
+     if(r.error)throw r.error;
+     if(mode==='signup'&&!r.data.session){status('تم إنشاء الحساب. افتح بريدك لتأكيد الحساب، ثم ارجع واضغط دخول.');return;}
+     await connectAndSync(c,mode);
+   }catch(e){status('خطأ: '+(e.message||e));}
+ };
+ window.hounetLogout=async()=>{
+   try{stopRealtime();readyForAutoSync=false;if(client)await client.auth.signOut();uid=null;status('تم تسجيل الخروج.');}
+   catch(e){status(e.message||String(e));}
+ };
+ window.hounetPushMerged=async(confirmUser=true)=>{
+   let c=await authUser();
+   if(confirmUser&&!confirm('سيتم رفع بيانات هذا الجهاز واستبدال نسخة السحابة بها. هل تريد المتابعة؟'))return;
+   const r=await c.from('shop_data').upsert({user_id:uid,payload:db,updated_at:new Date().toISOString()},{onConflict:'user_id'});
+   if(r.error)throw r.error;
+ };
+ window.hounetPush=async()=>{
+   try{
+     let c=await authUser();
+     if(!confirm('سيتم رفع واستبدال نسخة السحابة ببيانات هذا الجهاز. استعمل هذا الخيار فقط إذا بيانات هذا الجهاز هي النسخة الصحيحة. هل تريد المتابعة؟'))return;
+     const r=await c.from('shop_data').upsert({user_id:uid,payload:db,updated_at:new Date().toISOString()},{onConflict:'user_id'});
+     if(r.error)throw r.error;
+     readyForAutoSync=true;startRealtime(c);
+     status('تم رفع بيانات هذا الجهاز بنجاح. المزامنة التلقائية مفعّلة.');
+   }catch(e){status('فشل الرفع: '+(e.message||e)+'\nتأكّد من جدول shop_data وسياسات RLS في ملف cloud/supabase_setup.sql.');}
+ };
+ window.hounetPull=async()=>{
+   try{
+     let c=await authUser();
+     if(!confirm('سيتم استبدال البيانات المحلية على هذا الجهاز ببيانات السحابة. اعمل نسخة احتياطية قبل المتابعة. هل تريد الجلب؟'))return;
+     const found=await pullRemote(c);
+     if(found){readyForAutoSync=true;startRealtime(c);}
+   }catch(e){status('فشل الجلب: '+(e.message||e)+'\nتأكّد من إعداد جدول shop_data وRLS.');}
+ };
+ try{
+   let saved=JSON.parse(localStorage.getItem(CFG)||'{}');
+   if(saved.url&&saved.key&&window.supabase){
+     client=window.supabase.createClient(saved.url,saved.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
+     client.auth.getSession().then(async r=>{
+       if(r.data.session){
+         uid=r.data.session.user.id;
+         readyForAutoSync=false;
+         status('تم استرجاع جلسة الحساب. افتح السحابة واضغط «دخول» لدمج بيانات الجهازين بأمان.');
+       }
+     });
+   }
+ }catch(e){}
+ window.hounetAutoCloudSave=()=>{
+   if(!client||!uid||!readyForAutoSync||applyingRemote)return;
+   clearTimeout(saveTimer);
+   saveTimer=setTimeout(async()=>{
+     try{
+       let r=await client.auth.getUser();
+       if(r.error||!r.data.user)return;
+       uid=r.data.user.id;
+       let x=await client.from('shop_data').upsert({user_id:uid,payload:db,updated_at:new Date().toISOString()},{onConflict:'user_id'});
+       if(x.error)status('تم الحفظ محليًا، لكن فشل رفع التغيير للسحابة: '+x.error.message);
+       else status('متصل بالسحابة — تم حفظ التغيير، والتحديثات ستصل للجهاز الآخر تلقائيًا.');
+     }catch(e){status('تعذّر الحفظ السحابي: '+(e.message||e));}
+   },1000);
+ };
 })();
 </script>
 <script>if("serviceWorker" in navigator && location.protocol.startsWith("http")){window.addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}))}</script></body></html>
